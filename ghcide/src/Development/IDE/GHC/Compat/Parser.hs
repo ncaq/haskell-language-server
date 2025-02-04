@@ -16,7 +16,6 @@ module Development.IDE.GHC.Compat.Parser (
     Development.IDE.GHC.Compat.Parser.pm_mod_summary,
     Development.IDE.GHC.Compat.Parser.pm_extra_src_files,
     -- * API Annotations
-    Anno.AnnKeywordId(..),
     pattern EpaLineComment,
     pattern EpaBlockComment
     ) where
@@ -75,5 +74,3 @@ pattern ParsedModule
              , pm_extra_src_files = extra_src_files
              }
 {-# COMPLETE ParsedModule :: GHC.ParsedModule #-}
-
-

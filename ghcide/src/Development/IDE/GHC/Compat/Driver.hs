@@ -40,11 +40,6 @@ import           GHC.Utils.Logger
 import           GHC.Utils.Outputable
 import           GHC.Utils.Panic.Plain
 
-hscTypecheckRenameWithDiagnostics :: HscEnv -> ModSummary -> HsParsedModule
-                   -> IO ((TcGblEnv, RenamedStuff), Messages GhcMessage)
-hscTypecheckRenameWithDiagnostics hsc_env mod_summary rdr_module =
-    runHsc' hsc_env $ hsc_typecheck True mod_summary (Just rdr_module)
-
 -- ============================================================================
 -- DO NOT EDIT - Refer to top of file
 -- ============================================================================

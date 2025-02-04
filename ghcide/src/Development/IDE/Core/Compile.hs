@@ -94,7 +94,8 @@ import           Development.IDE.Types.Location
 import           Development.IDE.Types.Options
 import           GHC                                    (ForeignHValue,
                                                          GetDocsFailure (..),
-                                                         parsedSource, ModLocation (..))
+                                                         ModLocation (..),
+                                                         parsedSource)
 import qualified GHC.LanguageExtensions                 as LangExt
 import           GHC.Serialized
 import           HieDb                                  hiding (withHieDb)
@@ -109,12 +110,14 @@ import           System.IO.Extra                        (fixIO,
 
 import qualified Data.Set                               as Set
 import qualified GHC                                    as G
-import qualified GHC.Runtime.Loader                as Loader
+import qualified GHC.Runtime.Loader                     as Loader
 import           GHC.Tc.Gen.Splice
 import           GHC.Types.Error
 import           GHC.Types.ForeignStubs
 import           GHC.Types.HpcInfo
 import           GHC.Types.TypeEnv
+import           GHC.Unit.Module.ModIface
+import           System.OsPath                          (encodeUtf)
 
 -- See Note [Guidelines For Using CPP In GHCIDE Import Statements]
 
@@ -131,7 +134,7 @@ import           GHC.Unit.Module.Warnings
 import           Development.IDE.Core.FileStore         (shareFilePath)
 #endif
 
-import           Development.IDE.GHC.Compat.Driver (hscTypecheckRenameWithDiagnostics)
+import           Development.IDE.GHC.Compat.Driver      (hscTypecheckRenameWithDiagnostics)
 
 --Simple constants to make sure the source is consistently named
 sourceTypecheck :: T.Text
@@ -267,10 +270,13 @@ captureSplicesAndDeps TypecheckHelpers{..} env k = do
                                prepd_expr
 
              {- Convert to BCOs -}
-           ; bcos <- byteCodeGen hsc_env
-                       (icInteractiveModule ictxt)
-                       stg_expr
-                       [] Nothing
+           ; bcos <- byteCodeGen
+               hsc_env
+               (icInteractiveModule ictxt)
+               stg_expr
+               []
+               Nothing
+               []
 
             -- Exclude wired-in names because we may not have read
             -- their interface files, so getLinkDeps will fail
@@ -294,15 +300,13 @@ captureSplicesAndDeps TypecheckHelpers{..} env k = do
                  mods_transitive_list =
                                          mapMaybe nodeKeyToInstalledModule $ Set.toList mods_transitive
 
-           ; moduleLocs <- readIORef (fcModuleCache $ hsc_FC hsc_env)
-           ; lbs <- getLinkables [toNormalizedFilePath' file
-                                 | installedMod <- mods_transitive_list
-                                 , let ifr = fromJust $ lookupInstalledModuleEnv moduleLocs installedMod
-                                       file = case ifr of
-                                         InstalledFound loc _ ->
-                                           fromJust $ ml_hs_file loc
-                                         _ -> panic "hscCompileCoreExprHook: module not found"
-                                 ]
+           ; finderCache <- hsc_FC hsc_env
+           ; let modToFilePath installedMod = do
+                     installedFindResult <- fromJust <$> lookupFinderCache finderCache (notBoot installedMod)
+                     case installedFindResult of
+                         InstalledFound loc _ -> return $ toNormalizedFilePath' $ fromJust $ ml_hs_file loc
+                         _ -> panic "hscCompileCoreExprHook: module not found"
+           ; lbs <- mapM modToFilePath mods_transitive_list >>= getLinkables
            ; let hsc_env' = loadModulesHome (map linkableHomeMod lbs) hsc_env
 
              {- load it -}
@@ -386,18 +390,6 @@ tcRnModule hsc_env tc_helpers pmod = do
   pure (TcModuleResult pmod rn_info tc_gbl_env splices False mod_env warning_messages)
 
 
--- Note [Clearing mi_globals after generating an iface]
--- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
--- GHC populates the mi_global field in interfaces for GHCi if we are using the bytecode
--- interpreter.
--- However, this field is expensive in terms of heap usage, and we don't use it in HLS
--- anywhere. So we zero it out.
--- The field is not serialized or deserialised from disk, so we don't need to remove it
--- while reading an iface from disk, only if we just generated an iface in memory
---
-
-
-
 -- | See https://github.com/haskell/haskell-language-server/issues/3450
 -- GHC's recompilation avoidance in the presense of TH is less precise than
 -- HLS. To avoid GHC from pessimising HLS, we filter out certain dependency information
@@ -430,7 +422,7 @@ mkHiFileResultNoCompile session tcm = do
   details <- makeSimpleDetails hsc_env_tmp tcGblEnv
   sf <- finalSafeMode (ms_hspp_opts ms) tcGblEnv
   iface' <- mkIfaceTc hsc_env_tmp sf details ms Nothing tcGblEnv
-  let iface = iface' { mi_globals = Nothing, mi_usages = filterUsages (mi_usages iface') } -- See Note [Clearing mi_globals after generating an iface]
+  let iface = set_mi_usages (filterUsages (mi_usages iface')) iface'
   pure $! mkHiFileResult ms iface details (tmrRuntimeModules tcm) Nothing
 
 mkHiFileResultCompile
@@ -442,6 +434,7 @@ mkHiFileResultCompile
 mkHiFileResultCompile se session' tcm simplified_guts = catchErrs $ do
   let session = hscSetFlags (ms_hspp_opts ms) session'
       ms = pm_mod_summary $ tmrParsed tcm
+      tcGblEnv = tmrTypechecked tcm
 
   (details, guts) <- do
         -- write core file
@@ -450,19 +443,9 @@ mkHiFileResultCompile se session' tcm simplified_guts = catchErrs $ do
         (guts, details) <- tidyProgram tidy_opts simplified_guts
         pure (details, guts)
 
-  let !partial_iface = force $ mkPartialIface session
-#if MIN_VERSION_ghc(9,5,0)
-                                              (cg_binds guts)
-#endif
-                                              details
-                                              ms
-                                              simplified_guts
-
-  final_iface' <- mkFullIface session partial_iface Nothing
-#if MIN_VERSION_ghc(9,4,2)
-                    Nothing
-#endif
-  let final_iface = final_iface' {mi_globals = Nothing, mi_usages = filterUsages (mi_usages final_iface')} -- See Note [Clearing mi_globals after generating an iface]
+  sf <- finalSafeMode (ms_hspp_opts ms) tcGblEnv
+  iface' <- mkIfaceTc session sf details ms (Just (cg_binds guts)) tcGblEnv
+  let final_iface = set_mi_usages (filterUsages (mi_usages iface')) iface'
 
   -- Write the core file now
   core_file <- do
@@ -626,10 +609,10 @@ generateObjectCode session summary guts = do
                       case obj of
                         Nothing -> throwGhcExceptionIO $ Panic "compileFile didn't generate object code"
                         Just x -> pure x
-              let unlinked = DotO dot_o_fp
+              let unlinked = DotO dot_o_fp ModuleObject
               -- Need time to be the modification time for recompilation checking
               t <- liftIO $ getModificationTime dot_o_fp
-              let linkable = LM t mod [unlinked]
+              let linkable = Linkable t mod (pure unlinked)
 
               pure (map snd warnings, linkable)
 
@@ -639,15 +622,15 @@ generateByteCode :: CoreFileTime -> HscEnv -> ModSummary -> CgGuts -> IO (IdeRes
 generateByteCode (CoreFileTime time) hscEnv summary guts = do
     fmap (either (, Nothing) (second Just)) $
           catchSrcErrors (hsc_dflags hscEnv) "bytecode" $ do
-              (warnings, (_, bytecode, sptEntries)) <-
+              (warnings, (_, bytecode)) <-
                 withWarnings "bytecode" $ \_tweak -> do
                       let session = _tweak (hscSetFlags (ms_hspp_opts summary) hscEnv)
                           -- TODO: maybe settings ms_hspp_opts is unnecessary?
                           summary' = summary { ms_hspp_opts = hsc_dflags session }
                       hscInteractive session (mkCgInteractiveGuts guts)
                                 (ms_location summary')
-              let unlinked = BCOs bytecode sptEntries
-              let linkable = LM time (ms_mod summary) [unlinked]
+              let unlinked = BCOs bytecode
+              let linkable = Linkable time (ms_mod summary) (pure unlinked)
               pure (map snd warnings, linkable)
 
 demoteTypeErrorsToWarnings :: ParsedModule -> ParsedModule
@@ -908,12 +891,12 @@ mergeEnvs :: HscEnv -> ModuleGraph -> ModSummary -> [HomeModInfo] -> [HscEnv] ->
 mergeEnvs env mg ms extraMods envs = do
     let im  = Compat.installedModule (toUnitId $ moduleUnit $ ms_mod ms) (moduleName (ms_mod ms))
         ifr = InstalledFound (ms_location ms) im
-        curFinderCache = Compat.extendInstalledModuleEnv Compat.emptyInstalledModuleEnv im ifr
-    newFinderCache <- concatFC curFinderCache (map hsc_FC envs)
+        curFinderCacheState = Compat.extendInstalledModuleEnv Compat.emptyInstalledModuleEnv im ifr
+        newFinderCacheState = plusInstalledModuleEnv combineModuleLocations curFinderCacheState (map hsc_FC envs)
     return $! loadModulesHome extraMods $
       let newHug = foldl' mergeHUG (hsc_HUG env) (map hsc_HUG envs) in
       (hscUpdateHUG (const newHug) env){
-          hsc_FC = newFinderCache,
+          hsc_FC = newFinderCacheState,
           hsc_mod_graph = mg
       }
 
@@ -931,15 +914,6 @@ mergeEnvs env mg ms extraMods envs = do
         -- if a boot file shadows over a non-boot file
         combineModuleLocations a@(InstalledFound ml _) _ | Just fp <- ml_hs_file ml, not ("boot" `isSuffixOf` fp) = a
         combineModuleLocations _ b = b
-
-        concatFC :: FinderCacheState -> [FinderCache] -> IO FinderCache
-        concatFC cur xs = do
-          fcModules <- mapM (readIORef . fcModuleCache) xs
-          fcFiles <- mapM (readIORef . fcFileCache) xs
-          fcModules' <- newIORef $! foldl' (plusInstalledModuleEnv combineModuleLocations) cur fcModules
-          fcFiles' <- newIORef $! Map.unions fcFiles
-          pure $ FinderCache fcModules' fcFiles'
-
 
 withBootSuffix :: HscSource -> ModLocation -> ModLocation
 withBootSuffix HsBootFile = addBootSuffixLocnOut
@@ -1001,11 +975,13 @@ getModSummaryFromImports env fp _modTime mContents = do
     liftIO $ evaluate $ rnf textualImports
 
 
-    modLoc <- liftIO $ if mod == mAIN_NAME
+    modLoc <- liftIO $ do
+        ofp <- (encodeUtf fp)
+        if mod == mAIN_NAME
         -- specially in tests it's common to have lots of nameless modules
         -- mkHomeModLocation will map them to the same hi/hie locations
-        then mkHomeModLocation dflags (pathToModuleName fp) fp
-        else mkHomeModLocation dflags mod fp
+        then mkHomeModLocation dflags (pathToModuleName fp) ofp
+        else mkHomeModLocation dflags mod ofp
 
     let modl = mkHomeModule (hscHomeUnit ppEnv) mod
         sourceType = if "-boot" `isSuffixOf` takeExtension fp then HsBootFile else HsSrcFile
@@ -1370,15 +1346,14 @@ parseRuntimeDeps anns = mkModuleEnv $ mapMaybe go anns
 -- See Note [Recompilation avoidance in the presence of TH]
 checkLinkableDependencies :: MonadIO m => HscEnv -> ([NormalizedFilePath] -> m [BS.ByteString]) -> ModuleEnv BS.ByteString -> m (Maybe RecompileRequired)
 checkLinkableDependencies hsc_env get_linkable_hashes runtime_deps = do
-  moduleLocs <- liftIO $ readIORef (fcModuleCache $ hsc_FC hsc_env)
-  let go (mod, hash) = do
-        ifr <- lookupInstalledModuleEnv moduleLocs $ Compat.installedModule (toUnitId $ moduleUnit mod) (moduleName mod)
+  let moduleLocs = hsc_FC hsc_env
+      go (mod, hash) = do
+        ifr <- liftIO $ lookupFinderCache moduleLocs $ notBoot $ Compat.installedModule (toUnitId $ moduleUnit mod) (moduleName mod)
         case ifr of
-          InstalledFound loc _ -> do
-            hs <- ml_hs_file loc
-            pure (toNormalizedFilePath' hs,hash)
-          _ -> Nothing
-      hs_files = mapM go (moduleEnvToList runtime_deps)
+          Just (InstalledFound loc _)
+              | Just hs <- ml_hs_file loc -> return $ Just (toNormalizedFilePath' hs, hash)
+          _ -> return Nothing
+  hs_files <- sequence <$> mapM go (moduleEnvToList runtime_deps)
   case hs_files of
     Nothing -> error "invalid module graph"
     Just fs -> do
@@ -1421,7 +1396,9 @@ coreFileToCgGuts session iface details core_file = do
       -- Implicit binds aren't saved, so we need to regenerate them ourselves.
   let _implicit_binds = concatMap getImplicitBinds tyCons -- only used if GHC < 9.6
       tyCons = typeEnvTyCons (md_types details)
-#if MIN_VERSION_ghc(9,5,0)
+#if MIN_VERSION_ghc(9,12,0)
+  pure $ CgGuts this_mod tyCons core_binds [] NoStubs [] mempty Nothing []
+#elif MIN_VERSION_ghc(9,5,0)
   -- In GHC 9.6, the implicit binds are tidied and part of core_binds
   pure $ CgGuts this_mod tyCons core_binds [] NoStubs [] mempty (emptyHpcInfo False) Nothing []
 #else
@@ -1448,17 +1425,17 @@ getDocsBatch hsc_env _names = do
         case nameModule_maybe name of
             Nothing -> return (Left $ NameHasNoModule name)
             Just mod -> do
-             ModIface {
-                        mi_docs = Just Docs{ docs_mod_hdr = mb_doc_hdr
-                                      , docs_decls = dmap
-                                      , docs_args = amap
-                                      }
-                      } <- loadSysInterface (text "getModuleInterface") mod
-             if isNothing mb_doc_hdr && isNullUniqMap dmap && isNullUniqMap amap
-               then pure (Left (NoDocsInIface mod $ compiled name))
-               else pure (Right (
-                                  lookupUniqMap dmap name,
-                                  lookupWithDefaultUniqMap amap mempty name))
+                moduleInterface <- loadSysInterface (text "getModuleInterface") mod
+                let Just Docs
+                        { docs_mod_hdr = mb_doc_hdr
+                        , docs_decls = dmap
+                        , docs_args = amap
+                        } = mi_docs moduleInterface
+                if isNothing mb_doc_hdr && isNullUniqMap dmap && isNullUniqMap amap
+                  then pure (Left (NoDocsInIface mod $ compiled name))
+                  else pure (Right (
+                                     lookupUniqMap dmap name,
+                                     lookupWithDefaultUniqMap amap mempty name))
     return $ map (first $ T.unpack . printOutputable) res
   where
     compiled n =

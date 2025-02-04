@@ -279,7 +279,6 @@ library hls-cabal-plugin
     , transformers
     , unordered-containers  >=0.2.10.0
     , containers
-    , cabal-add
     , process
     , aeson
     , Cabal
@@ -347,7 +346,7 @@ library hls-class-plugin
     , deepseq
     , extra
     , ghc
-    , ghc-exactprint  >= 1.5 && < 1.10.0.0
+    , ghc-exactprint  >= 1.5 && < 1.12.0.0
     , ghcide          == 2.9.0.1
     , hls-graph
     , hls-plugin-api  == 2.9.0.1
@@ -1497,7 +1496,7 @@ library hls-fourmolu-plugin
   build-depends:
     , base            >=4.12 && <5
     , filepath
-    , fourmolu        ^>= 0.14 || ^>= 0.15 || ^>= 0.16
+    , fourmolu        ^>= 0.14 || ^>= 0.15 || ^>= 0.16  || ^>= 0.17
     , ghc-boot-th
     , ghcide          == 2.9.0.1
     , hls-plugin-api  == 2.9.0.1

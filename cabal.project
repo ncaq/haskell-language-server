@@ -8,8 +8,6 @@ packages:
          ./hls-test-utils
 
 
-index-state:  2024-12-02T00:00:00Z
-
 tests: True
 test-show-details: direct
 
@@ -62,3 +60,43 @@ if impl(ghc >= 9.8.4) && impl(ghc < 9.8.5)
     ghc-lib-parser:filepath
   constraints:
     ghc-lib-parser==9.8.4.20241130
+
+source-repository-package
+  type: git
+  location: https://github.com/ncaq/HieDb/
+  tag: 5bf4d81942374ff08874a94e493e22d23f95028f
+
+source-repository-package
+  type: git
+  location: https://github.com/maoe/ghc-trace-events
+  tag: f18107dec920564f7cbcde52e17d0b4b41add5a3
+
+source-repository-package
+  type: git
+  location: https://github.com/ncaq/hie-bios/
+  tag: ebbbb2fe640efdc8c9b9f177c70f283b457ac1c6
+
+source-repository-package
+  type: git
+  location: https://github.com/obsidiansystems/constraints-extras/
+  tag: 5e91480345d5f6255a2f297bca3c488b2684a5ef
+
+source-repository-package
+  type: git
+  location: https://github.com/tweag/ormolu/
+  tag: 31bb447b4209789ea6ff68181d20b00b6c17ae6f
+
+source-repository-package
+  type: git
+  location: https://github.com/ncaq/fourmolu/
+  tag: 94098d0146998fc093429d5c38c9a0b8b52a4451
+
+source-repository-package
+  type: git
+  location: https://github.com/ncaq/stan/
+  tag: 8d574225ceffea7edf351a07256f32fbad4df030
+
+source-repository-package
+  type: git
+  location: https://github.com/ncaq/tasty-hspec/
+  tag: 327ad99f8ace495e629aac7f902ab3f38def82ec

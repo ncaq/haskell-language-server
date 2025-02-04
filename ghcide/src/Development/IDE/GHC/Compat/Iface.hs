@@ -10,6 +10,7 @@ import           Development.IDE.GHC.Compat.Env
 import           Development.IDE.GHC.Compat.Outputable
 import           GHC
 import           GHC.Driver.Session                    (targetProfile)
+import qualified GHC.Iface.Binary                      as Iface
 import qualified GHC.Iface.Load                        as Iface
 import           GHC.Unit.Finder.Types                 (FindResult)
 
@@ -21,7 +22,7 @@ import           GHC.Iface.Errors.Types                (IfaceMessage)
 #endif
 
 writeIfaceFile :: HscEnv -> FilePath -> ModIface -> IO ()
-writeIfaceFile env fp iface = Iface.writeIface (hsc_logger env) (targetProfile $ hsc_dflags env) fp iface
+writeIfaceFile env fp iface = Iface.writeIface (hsc_logger env) (targetProfile $ hsc_dflags env) Iface.NormalCompression fp iface
 
 cannotFindModule :: HscEnv -> ModuleName -> FindResult -> SDoc
 cannotFindModule env modname fr =

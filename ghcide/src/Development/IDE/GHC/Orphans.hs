@@ -51,18 +51,23 @@ instance Show ModDetails where show = const "<moddetails>"
 instance NFData ModDetails where rnf = rwhnf
 instance NFData SafeHaskellMode where rnf = rwhnf
 instance Show Linkable where show = unpack . printOutputable
-instance NFData Linkable where rnf (LM a b c) = rnf a `seq` rnf b `seq` rnf c
-instance NFData Unlinked where
-  rnf (DotO f)           = rnf f
+instance NFData Linkable where rnf (Linkable a b c) = rnf a `seq` rnf b `seq` rnf c
+instance NFData LinkablePart where
+  rnf (DotO f _)         = rnf f
   rnf (DotA f)           = rnf f
   rnf (DotDLL f)         = rnf f
-  rnf (BCOs a b)         = seqCompiledByteCode a `seq` liftRnf rwhnf b
+  rnf (BCOs x)           = seqCompiledByteCode x
 #if MIN_VERSION_ghc(9,5,0)
   rnf (CoreBindings wcb) = rnf wcb
-  rnf (LoadedBCOs us)    = rnf us
+  rnf (LazyBCOs x _)     = rnf x
+
+instance NFData CompiledByteCode where
+    rnf (CompiledByteCode{..}) =
+        rnf bc_bcos `seq`
+        rnf bc_ffis
 
 instance NFData WholeCoreBindings where
-  rnf (WholeCoreBindings bs m ml) = rnf bs `seq` rnf m `seq` rnf ml
+  rnf (WholeCoreBindings bs m ml wf) = rnf bs `seq` rnf m `seq` rnf ml `seq` rnf wf
 
 instance NFData ModLocation where
     rnf (ModLocation mf f1 f2 f3 f4 f5) = rnf mf `seq` rnf f1 `seq` rnf f2 `seq` rnf f3 `seq` rnf f4 `seq` rnf f5

@@ -24,9 +24,12 @@ import           Development.IDE.GHC.Error         as ErrUtils
 import           Development.IDE.GHC.Orphans       ()
 import           Development.IDE.Types.Diagnostics
 import           Development.IDE.Types.Location
+import           GHC.Driver.DynFlags
 import           GHC.Types.PkgQual
 import           GHC.Unit.State
 import           System.FilePath
+import           System.OsPath                     (encodeUtf)
+import           System.OsPath.Types
 
 
 data Import
@@ -68,7 +71,7 @@ data LocateResult
 
 -- | locate a module in the file system. Where we go from *daml to Haskell
 locateModuleFile :: MonadIO m
-             => [(UnitId, [FilePath], S.Set ModuleName)]
+             => [(UnitId, [FilePath], [ReexportedModule])]
              -> [String]
              -> (ModuleName -> NormalizedFilePath -> m (Maybe NormalizedFilePath))
              -> Bool
@@ -81,7 +84,7 @@ locateModuleFile import_dirss exts targetFor isSource modName = do
   mf <- firstJustM go (concat [map (uid,) (candidates dirs) | (uid, dirs, _) <- import_dirss])
   case mf of
     Nothing ->
-      case find (\(_ , _, reexports) -> S.member modName reexports) import_dirss of
+      case find (\(_ , _, reexports) -> modName `elem` (reexportTo <$> reexports)) import_dirss of
         Just (uid,_,_) -> pure $ LocateFoundReexport uid
         Nothing        -> pure LocateNotFound
     Just (uid,file) -> pure $ LocateFoundFile uid file
@@ -95,7 +98,7 @@ locateModuleFile import_dirss exts targetFor isSource modName = do
 -- It only returns Just for unit-ids which are possible to import into the
 -- current module. In particular, it will return Nothing for 'main' components
 -- as they can never be imported into another package.
-mkImportDirs :: HscEnv -> (UnitId, DynFlags) -> Maybe (UnitId, ([FilePath], S.Set ModuleName))
+mkImportDirs :: HscEnv -> (UnitId, DynFlags) -> Maybe (UnitId, ([FilePath], [ReexportedModule]))
 mkImportDirs _env (i, flags) = Just (i, (importPaths flags, reexportedModules flags))
 
 -- | locate a module in either the file system or the package database. Where we go from *daml to
@@ -127,7 +130,7 @@ locateModule env comp_info exts targetFor modName mbPkgName isSource = do
       -- Reexports for current unit have to be empty because they only apply to other units depending on the
       -- current unit. If we set the reexports to be the actual reexports then we risk looping forever trying
       -- to find the module from the perspective of the current unit.
-      mbFile <- locateModuleFile ((homeUnitId_ dflags, importPaths dflags, S.empty) : other_imports) exts targetFor isSource $ unLoc modName
+      mbFile <- locateModuleFile ((homeUnitId_ dflags, importPaths dflags, []) : other_imports) exts targetFor isSource $ unLoc modName
       case mbFile of
         LocateNotFound -> lookupInPackageDB
         -- Lookup again with the perspective of the unit reexporting the file
@@ -164,7 +167,8 @@ locateModule env comp_info exts targetFor modName mbPkgName isSource = do
             import_paths
 
     toModLocation uid file = liftIO $ do
-        loc <- mkHomeModLocation dflags (unLoc modName) (fromNormalizedFilePath file)
+        osPath <- encodeUtf $ fromNormalizedFilePath file
+        loc <- mkHomeModLocation dflags (unLoc modName) osPath
         let genMod = mkModule (RealUnit $ Definite uid) (unLoc modName)  -- TODO support backpack holes
         return $ Right $ FileImport $ ArtifactsLocation file (Just loc) (not isSource) (Just genMod)
 

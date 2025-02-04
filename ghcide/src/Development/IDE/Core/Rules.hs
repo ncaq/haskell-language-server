@@ -159,10 +159,10 @@ import           Ide.Plugin.Properties                        (HasProperty,
                                                                usePropertyByPath)
 import           Ide.Types                                    (DynFlagsModifications (dynFlagsModifyGlobal, dynFlagsModifyParser),
                                                                PluginId)
+import qualified Language.LSP.Protocol.Lens                   as JL
 import           Language.LSP.Protocol.Message                (SMethod (SMethod_CustomMethod, SMethod_WindowShowMessage))
 import           Language.LSP.Protocol.Types                  (MessageType (MessageType_Info),
                                                                ShowMessageParams (ShowMessageParams))
-import qualified Language.LSP.Protocol.Lens                   as JL
 import           Language.LSP.Server                          (LspT)
 import qualified Language.LSP.Server                          as LSP
 import           Language.LSP.VFS
@@ -1063,10 +1063,10 @@ getLinkableRule recorder =
               else pure Nothing
             case mobj_time of
               Just obj_t
-                | obj_t >= core_t -> pure ([], Just $ HomeModInfo hirModIface hirModDetails (justObjects $ LM (posixSecondsToUTCTime obj_t) (ms_mod hirModSummary) [DotO obj_file]))
+                | obj_t >= core_t -> pure ([], Just $ HomeModInfo hirModIface hirModDetails (justObjects $ Linkable (posixSecondsToUTCTime obj_t) (ms_mod hirModSummary) [DotO obj_file]))
               _ -> liftIO $ coreFileToLinkable linkableType (hscEnv session) hirModSummary hirModIface hirModDetails bin_core (error "object doesn't have time")
         -- Record the linkable so we know not to unload it, and unload old versions
-        whenJust ((homeModInfoByteCode =<< hmi) <|> (homeModInfoObject =<< hmi)) $ \(LM time mod _) -> do
+        whenJust ((homeModInfoByteCode =<< hmi) <|> (homeModInfoObject =<< hmi)) $ \(Linkable time mod _) -> do
             compiledLinkables <- getCompiledLinkables <$> getIdeGlobalAction
             liftIO $ modifyVar compiledLinkables $ \old -> do
               let !to_keep = extendModuleEnv old mod time
@@ -1080,7 +1080,7 @@ getLinkableRule recorder =
               --just before returning it to be loaded. This has a substantial effect on recompile
               --times as the number of loaded modules and splices increases.
               --
-              unload (hscEnv session) (map (\(mod', time') -> LM time' mod' []) $ moduleEnvToList to_keep)
+              unload (hscEnv session) (map (\(mod', time') -> Linkable time' mod' []) $ moduleEnvToList to_keep)
               return (to_keep, ())
         return (fileHash <$ hmi, (warns, LinkableResult <$> hmi <*> pure fileHash))
 
